@@ -21,7 +21,7 @@
 ## Usage
 
 ```bash
-chmod +x analyze_filters.sh
+chmod +x alimap_filters.sh
 ./alimap_filters.sh <input_bam>
 ```
 
