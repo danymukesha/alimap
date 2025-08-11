@@ -130,7 +130,7 @@ The script also have the ability to detect whether the BAM uses **hg19 or hg38**
 
 Test run example (`--test`):
 
-![Example Plot](example/alimap_filters_plot.png)
+![Example Plot](ext/figures/alimap_filters_plot.png)
 
 ------------------------------------------------------------------------
 
