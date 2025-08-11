@@ -1,4 +1,4 @@
-# **Alimap**
+# **alimap** <a href="https://danymukesha.github.io/alimap/"><img src="ext/figures/logo.jpg" align="right" height="139" alt="alimap website" /></a>
 
 *BAM filtering, QC, and mapping quality profiling tool*
 
@@ -6,7 +6,7 @@
 
 ## **Overview**
 
-**Alimap** is a fully stand-alone Bash-based pipeline for read filtering and quality control of BAM alignment files. It improves upon standard tools by integrating:
+**alimap** is a fully stand-alone Bash-based pipeline for read filtering and quality control of BAM alignment files. It improves upon standard tools by integrating:
 
 -   **Multi-step filtering** (blacklist removal, MAPQ thresholds, unmapped read exclusion)
 -   **Per-read removal logs** for transparency and reproducibility
@@ -16,13 +16,13 @@
 -   **Publication-ready stacked bar plots** showing % of reads removed at each filtering stage
 -   **Self-contained test mode** downloading small public BAM + BED files to validate installation
 
-This makes *Alimap* ideal for **large-scale genomics QC**, and **reproducibility pipelines**.
+This makes *alimap* ideal for **large-scale genomics QC**, and **reproducibility pipelines**.
 
 ------------------------------------------------------------------------
 
 ## **Motivation**
 
-While existing BAM filtering tools (e.g., `samtools view`, `bedtools intersect`) provide basic functionality, they lack integrated QC, reproducible benchmarking, and direct visualization. **Alimap** fills this gap by producing:
+While existing BAM filtering tools (e.g., `samtools view`, `bedtools intersect`) provide basic functionality, they lack integrated QC, reproducible benchmarking, and direct visualization. **alimap** fills this gap by producing:
 
 -   **Detailed removal statistics** for manuscript-ready methods sections
 -   **Automated genome build compatibility** (no manual blacklist switching)
@@ -189,7 +189,7 @@ Total               4.10        110
 
 If you use **Alimap** in your research, please cite:
 
-> Mukesha D. *Alimap: Integrated read filtering, QC, and benchmarking for BAM alignment files.* 2025. Available at: [https://github.com/danymukesha/alimap](https://github.com/yourusername/alimap){.uri}
+> Mukesha D. *Alimap: Integrated read filtering, QC, and benchmarking for BAM alignment files.* 2025. Available at: [https://github.com/danymukesha/alimap](https://github.com/danymukesha/alimap){.uri}
 
 ------------------------------------------------------------------------
 
@@ -202,3 +202,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## **Acknowledgements**
 
 Thanks to the developers of `samtools` and `bedtools` for the underlying alignment and interval manipulation tools.
+
