@@ -104,12 +104,40 @@ Outputs (written to --outdir):
 ./alimap.sh --test --outdir results_test --threads 2
 ```
 
+#### **Walk-through for test run**
+
+When you run the test, the script will fetch a **small, real BAM** from a public source (1000 Genomes Project) plus a minimal blacklist BED.
+
+**Here are the expected sizes & MD5s (for the test run)**
+
+| File                 | Size (approx) | MD5                                |
+|----------------------|---------------|------------------------------------|
+| `test.bam`           | \~1.5 MB      | `0c5f5793db8cc6f9b7f86b6c17264b6b` |
+| `test.bam.bai`       | \~32 KB       | `4d0f1f68b7ff6d868d513e073ed3daba` |
+| `blacklist_hg19.bed` | \~35 KB       | `a65ed0c4b9a773c94aa6f2afbb3d9788` |
+| `blacklist_hg38.bed` | \~39 KB       | `b227a36449e52f9243cf2bb8bc1f77f2` |
+
+They are automatically validated within the script after downloading.
+
+The script also have the ability to detect whether the BAM uses **hg19 or hg38** by checking chromosome naming:
+
+-   If contigs are like `chr1`, `chr2` → likely hg38
+-   If contigs are like `1`, `2` → likely hg19 (Though there’s overlap — some custom builds may mix)
+
+------------------------------------------------------------------------
+
+#### **Example Output (test-mode)**
+
+Test run example (`--test`):
+
+![Example Plot](example/alimap_filters_plot.png)
+
 ------------------------------------------------------------------------
 
 ## **Options**
 
 | Option        | Description                                               |
-|------------------|------------------------------------------------------|
+|-------------------|-----------------------------------------------------|
 | `--bam`       | Input BAM file                                            |
 | `--blacklist` | BED file of regions to remove (auto-switch for hg19/hg38) |
 | `--outdir`    | Output directory                                          |
@@ -133,14 +161,6 @@ The pipeline produces:
 | `filter_removal_stacked_bar.pdf` | Publication-ready plot of % removed |
 | `runtime_report.txt` | Timing & resource usage report |
 | `md5_checksums.txt` | MD5 hashes of key files for reproducibility |
-
-------------------------------------------------------------------------
-
-## **Example Output**
-
-Test run example (`--test`):
-
-![Example Plot](example/alimap_filters_plot.pdf)
 
 ------------------------------------------------------------------------
 
