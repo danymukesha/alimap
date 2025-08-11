@@ -1,58 +1,58 @@
 #!/usr/bin/env bash
-# alimap_enhanced.sh
-# Refactored, robust BAM filtering + QC tool with optional blacklist exclusion
-# Author: Dany Mukesha (original) + refactor and enhancements (2025-08-11)
-# Purpose: produce cumulative filters, robust logging, optional blacklist exclusion,
-#          samtools + bedtools + R-based plotting, samtools-stats QC, and reproducible outputs.
+# alimap.sh
+# Stand-alone BAM filtering + QC tool with blacklist exclusion, per-read removal log,
+# timing/resource benchmarking, MAPQ histograms export, and enhanced plotting.
+# Author: Dany Mukesha (original) + refactor & enhancements (2025-08-11)
 
 set -euo pipefail
-IFS=$'\n\t'
+IFS=$'
+	'
 
 VERSION="2025-08-11"
 
 print_help() {
     cat <<EOF
-alimap_enhanced.sh v$VERSION
+alimap.sh v$VERSION
 
-Usage: $(basename "$0") -i <input.bam> [-b <blacklist.bed>] [-t <threads>] [-o <outdir>] [--mode cumulative|independent] [--keep-temp]
+Usage: $(basename "$0") -i <input.bam> [options]
+
+Required:
+  -i,--input FILE         Input BAM file (sorted). If missing .bai the script will index it.
 
 Options:
-  -i|--input        Input BAM file (required). Must be indexed (.bai or .csi). If missing index, script can create it.
-  -b|--blacklist    Optional BED file of blacklist regions to exclude (requires bedtools >=2.25)
-  -t|--threads      Number of threads for samtools (default: 1)
-  -o|--outdir       Output directory (default: filtered_reads)
-  -m|--mode         "cumulative" (apply filters sequentially) or "independent" (each filter applied to input). Default: cumulative
-  --keep-temp       Keep temporary files (useful for debugging)
-  -h|--help         Show this help and exit
+  -b,--blacklist FILE     Optional blacklist BED (hg38/hg19 style). If absent, can be auto-downloaded in --test.
+  -t,--threads N          Number of threads for samtools (default: 1)
+  -o,--outdir DIR         Output directory (default: filtered_reads)
+  -m,--mode MODE          cumulative|independent (default: cumulative)
+  --keep-temp             Keep temporary files
+  --test                  Download small public test BAM + blacklist and run pipeline on them
+  -h,--help               Show this help
 
-Example:
-  $(basename "$0") -i sample.bam -b hg38_blacklist.bed -t 4 -o results --mode cumulative
-
-Outputs written to <outdir> and <outdir>/qc. Files:
-  filter_counts.txt        Tab-delimited: filter\treads_remaining
-  <outdir>/filtered_*.bam Filtered BAMs per filter step
-  <outdir>/qc/*            QC outputs (samtools flagstat, idxstats, stats)
-  alimap_filters_plot.pdf  Barplot of read counts per filter (requires R + ggplot2)
+Description:
+  - Produces filtered BAMs per filter step, indexed.
+  - Produces a per-read removal log when blacklist exclusion is used (read names removed).
+  - Produces mapping quality histograms (CSV) per filter.
+  - Produces timing/resource usage (if /usr/bin/time available) for heavy steps.
+  - Creates enhanced R plots: absolute counts + percent removed per step (stacked bars).
 
 Notes:
-  - If bedtools is not present, blacklist exclusion will be skipped and a warning will be shown.
-  - This script aims for reproducible, audit-friendly filtering of BAM files.
+  - Required: samtools, awk, sort, uniq, Rscript
+  - Optional but recommended: bedtools (blacklist exclusion), /usr/bin/time for benchmarking
+  - Test data source (example): UCSC ENCODE small BAM and Boyle-Lab ENCODE blacklist.
+    See: https://hgdownload.cse.ucsc.edu/ (example BAM) and https://github.com/Boyle-Lab/Blacklist (blacklist). 
 EOF
 }
 
-# default params
+# Defaults
 threads=1
 outdir="filtered_reads"
 mode="cumulative"
 keep_temp=0
 blacklist_bed=""
+run_test=0
 
-# parsing args (getopt for long options)
-if ! getopt --test >/dev/null; then
-    echo "getopt not available; falling back to basic parsing." >&2
-fi
-
-ARGS=$(getopt -o i:b:t:o:m:kh --long input:,blacklist:,threads:,outdir:,mode:,keep-temp,help -n "$(basename "$0")" -- "$@") || { print_help; exit 1; }
+# Parse args
+ARGS=$(getopt -o i:b:t:o:m:kh --long input:,blacklist:,threads:,outdir:,mode:,keep-temp,test,help -n "$(basename "$0")" -- "$@") || { print_help; exit 1; }
 eval set -- "$ARGS"
 while true; do
     case "$1" in
@@ -62,81 +62,119 @@ while true; do
         -o|--outdir) outdir="$2"; shift 2;;
         -m|--mode) mode="$2"; shift 2;;
         --keep-temp) keep_temp=1; shift;;
+        --test) run_test=1; shift;;
         -h|--help) print_help; exit 0;;
         --) shift; break;;
-        *) echo "Internal error while parsing args"; exit 1;;
+        *) echo "Parsing error"; exit 1;;
     esac
 done
 
-# Basic validation
+# If test mode: download a small public BAM and blacklist
+if [ "$run_test" -eq 1 ]; then
+    echo "[INFO] Running in --test mode: will download example BAM + blacklist"
+    mkdir -p test_data
+    cd test_data
+
+    # Example small BAM from UCSC ENCODE (public sample). This is used widely as an example/test file.
+    TEST_BAM_URL="http://hgdownload.cse.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqGm12878G1bAlnRep1.bam"
+    TEST_BAM="wgEncodeUwRepliSeqGm12878G1bAlnRep1.bam"
+
+    if [ ! -f "$TEST_BAM" ]; then
+        echo "[INFO] Downloading example BAM from UCSC: $TEST_BAM_URL"
+        if command -v wget >/dev/null 2>&1; then
+            wget -q --show-progress "$TEST_BAM_URL" -O "$TEST_BAM" || { echo "Failed to download test BAM"; exit 1; }
+        elif command -v curl >/dev/null 2>&1; then
+            curl -L -o "$TEST_BAM" "$TEST_BAM_URL" || { echo "Failed to download test BAM"; exit 1; }
+        else
+            echo "Error: wget or curl required to download test BAM"; exit 1
+        fi
+    fi
+
+    # Use Boyle-Lab hg38 blacklist (v2) as a reasonable small blacklist; raw GitHub URL
+    BLACKLIST_URL="https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/hg38-blacklist.v2.bed.gz"
+    BLACKLIST_GZ="hg38-blacklist.v2.bed.gz"
+    BLACKLIST_BED="hg38-blacklist.v2.bed"
+
+    if [ ! -f "$BLACKLIST_BED" ]; then
+        echo "[INFO] Downloading blacklist: $BLACKLIST_URL"
+        if command -v wget >/dev/null 2>&1; then
+            wget -q --show-progress "$BLACKLIST_URL" -O "$BLACKLIST_GZ" || { echo "Failed to download blacklist"; exit 1; }
+        elif command -v curl >/dev/null 2>&1; then
+            curl -L -o "$BLACKLIST_GZ" "$BLACKLIST_URL" || { echo "Failed to download blacklist"; exit 1; }
+        else
+            echo "Error: wget or curl required to download blacklist"; exit 1
+        fi
+        gunzip -f "$BLACKLIST_GZ"
+    fi
+
+    # Set input and blacklist to downloaded files
+    input_bam="$PWD/$TEST_BAM"
+    blacklist_bed="$PWD/$BLACKLIST_BED"
+    cd - >/dev/null
+fi
+
+# Validate required variables
 if [ -z "${input_bam-}" ]; then
-    echo "Error: input BAM required." >&2
+    echo "Error: --input required (or use --test)." >&2
     print_help
     exit 1
 fi
 
 if [ ! -f "$input_bam" ]; then
-    echo "Error: Input BAM '$input_bam' not found." >&2
+    echo "Error: input BAM '$input_bam' not found." >&2
     exit 1
 fi
 
-# output dirs
+# Create output dirs
 mkdir -p "$outdir"
 qc_dir="$outdir/qc"
 mkdir -p "$qc_dir"
 
-# temporary dir
+# Temp dir
 tmpdir=$(mktemp -d -t alimap.XXXXXX)
 trap '[[ $keep_temp -eq 1 ]] || rm -rf "$tmpdir"' EXIT
 
-# checking the dependencies
-missing_deps=()
-for cmd in samtools awk sort uniq Rscript; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        missing_deps+=("$cmd")
+# Dependency checks
+missing=()
+for c in samtools awk sort uniq Rscript; do
+    if ! command -v "$c" >/dev/null 2>&1; then
+        missing+=("$c")
     fi
 done
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "Error: Missing required commands: ${missing[*]}"; exit 1
+fi
 
 # bedtools optional
 bedtools_ok=1
 if ! command -v bedtools >/dev/null 2>&1; then
     bedtools_ok=0
-    echo "Warning: bedtools not found. Blacklist exclusion will be skipped if requested." >&2
+    echo "[WARN] bedtools not found: blacklist exclusion will be skipped unless bedtools installed."
 fi
 
-if [ ${#missing_deps[@]} -gt 0 ]; then
-    echo "Error: missing required dependencies: ${missing_deps[*]}" >&2
-    exit 1
+# /usr/bin/time for benchmarking (optional)
+time_bin=""
+if command -v /usr/bin/time >/dev/null 2>&1; then
+    time_bin="/usr/bin/time -v"
 fi
 
-# controlling threads is integer
-if ! [[ "$threads" =~ ^[0-9]+$ ]]; then
-    echo "Error: threads must be an integer." >&2
-    exit 1
-fi
-
-# controlling index; create if needed
-index_file="${input_bam}.bai"
-if [ ! -f "$index_file" ]; then
-    echo "Index for $input_bam not found. Creating index with samtools index..."
+# Check index; create if missing
+if [ ! -f "${input_bam}.bai" ] && [ ! -f "${input_bam%.bam}.bai" ]; then
+    echo "[INFO] Index missing for $input_bam. Creating index..."
     samtools index -@ "$threads" "$input_bam"
 fi
 
-# validating blacklist file if provided
+# Validate blacklist
 if [ -n "$blacklist_bed" ]; then
     if [ ! -f "$blacklist_bed" ]; then
-        echo "Error: blacklist BED '$blacklist_bed' not found." >&2
-        exit 1
+        echo "Error: blacklist file '$blacklist_bed' not found."; exit 1
     fi
     if [ $bedtools_ok -eq 0 ]; then
-        echo "Warning: bedtools not available; blacklist exclusion will be skipped." >&2
-        blacklist_bed=""
+        echo "[WARN] bedtools not installed: will skip blacklist exclusion."; blacklist_bed=""
     fi
 fi
 
-# Here, we define filters (ordered). Each item is: key|samtools_flags|description
-# samtools_flags are applied using samtools view -b <flags>
-# Use cumulative mode: each step starts from previous output. Independent mode: always from input_bam.
+# Filters definition: name|samtools_flags|description
 filters=(
   "no_filter||No filtering (copy input)"
   "exclude_unmapped|-F 4|Exclude unmapped reads"
@@ -145,44 +183,95 @@ filters=(
   "properly_paired|-f 2|Keep properly paired reads"
 )
 
-filter_counts_file="$outdir/filter_counts.txt"
-: > "$filter_counts_file"
+filter_counts="$outdir/filter_counts.txt"
+: > "$filter_counts"
 
-# a helper to run a filter step
-run_filter() {
-    local name="$1" flags="$2" desc="$3"
-    local in_bam="$4"
-    local out_bam="$5"
+# Create header run_info
+run_info="$outdir/run_info.txt"
+{
+  echo "alimap.sh v$VERSION"
+  echo "timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  echo "input_bam: $input_bam"
+  echo "blacklist_bed: ${blacklist_bed:-NONE}"
+  echo "threads: $threads"
+  echo "mode: $mode"
+  echo "pwd: $(pwd)"
+  echo "samtools: $(samtools --version | head -n1)"
+  if [ -n "$time_bin" ]; then echo "time: /usr/bin/time available"; fi
+} > "$run_info"
 
-    echo "[INFO] Step: $name — $desc"
-
-    if [ -z "$flags" ]; then
-        # make a copy
-        samtools view -@ "$threads" -b "$in_bam" -o "$out_bam"
-    else
-        # we use eval to preserve flags spacing
-        eval samtools view -@ "$threads" -b $flags "\"$in_bam\"" -o "\"$out_bam\""
-    fi
-
-    # optional: exclude blacklist using bedtools intersect -abam <in> -b <blacklist> -v -bedpe? -ubam
-    if [ -n "$blacklist_bed" ]; then
-        echo "[INFO] Excluding blacklist regions using bedtools (this will replace $out_bam)"
-        # bedtools intersect -abam IN -b blacklist -v > OUT
-        tmp_no_black="$tmpdir/${name}.no_blacklist.bam"
-        bedtools intersect -abam "$out_bam" -b "$blacklist_bed" -v > "$tmp_no_black"
-        mv "$tmp_no_black" "$out_bam"
-    fi
-
-    # indexing the output
-    samtools index -@ "$threads" "$out_bam"
-
-    local cnt
-    cnt=$(samtools view -c "$out_bam")
-    printf "%s\t%s\n" "$name" "$cnt" >> "$filter_counts_file"
-    echo "[INFO] $name -> $out_bam (reads: $cnt)"
+# Function to write MAPQ histogram CSV
+write_mapq_hist() {
+    local bam=$1
+    local outcsv=$2
+    # produce histogram of MAPQ values (0-60), bin per MAPQ
+    samtools view "$bam" | awk '{print $5}' | sort -n | uniq -c | awk '{print $2","$1}' > "$outcsv"
 }
 
-# now we apply the filters
+# Run filter step
+run_filter() {
+    local name="$1" flags="$2" desc="$3" in_bam="$4" out_bam="$5"
+
+    echo "[STEP] $name: $desc"
+    start_time=$(date +%s)
+    start_epoch=$(date +%s%3N)
+
+    if [ -z "$flags" ]; then
+        cmd=(samtools view -@ "$threads" -b "$in_bam" -o "$out_bam")
+    else
+        # split flags into array
+        read -r -a flag_array <<< "$flags"
+        cmd=(samtools view -@ "$threads" -b "${flag_array[@]}" "$in_bam" -o "$out_bam")
+    fi
+
+    if [ -n "$time_bin" ]; then
+        # run with timing
+        /usr/bin/time -v "${cmd[@]}" 1>"$tmpdir/${name}.samtools.stdout" 2>"$tmpdir/${name}.samtools.time" || { cat "$tmpdir/${name}.samtools.time"; exit 1; }
+    else
+        "${cmd[@]}"
+    fi
+
+    # If blacklist requested, create per-read removal log
+    if [ -n "$blacklist_bed" ]; then
+        echo "[INFO] Excluding blacklist regions from $out_bam (producing removal log)..."
+        # bedtools intersect -abam IN -b blacklist -v > OUT (keeps reads NOT overlapping blacklist)
+        tmp_no_black="$tmpdir/${name}.no_blacklist.bam"
+        if [ $bedtools_ok -eq 1 ]; then
+            # produce list of read names removed (overlapping blacklist)
+            # bedtools intersect -abam IN -b blacklist -u outputs reads that overlap; -u to report once
+            bedtools intersect -abam "$out_bam" -b "$blacklist_bed" -u | samtools view -F 0x4 -@ "$threads" - | awk '{print $1}' | sort -u > "$out_bam.removed.reads.txt"
+            # now produce bam without blacklist overlapping reads
+            bedtools intersect -abam "$out_bam" -b "$blacklist_bed" -v > "$tmp_no_black"
+            mv "$tmp_no_black" "$out_bam"
+        else
+            echo "[WARN] bedtools not available; skipping blacklist exclusion step for $name"
+        fi
+    fi
+
+    # Index output
+    samtools index -@ "$threads" "$out_bam"
+
+    # Count reads
+    cnt=$(samtools view -c "$out_bam")
+    printf "%s	%s
+" "$name" "$cnt" >> "$filter_counts"
+
+    # produce MAPQ histogram CSV
+    mapq_csv="$outdir/${name}_mapq_hist.csv"
+    write_mapq_hist "$out_bam" "$mapq_csv"
+
+    end_time=$(date +%s)
+    duration=$((end_time - start_time))
+
+    # If timing log created by /usr/bin/time, copy it to outdir
+    if [ -f "$tmpdir/${name}.samtools.time" ]; then
+        mv "$tmpdir/${name}.samtools.time" "$outdir/${name}.samtools.time.txt"
+    fi
+
+    echo "[DONE] $name: reads=$cnt duration=${duration}s mapq_csv=$mapq_csv"
+}
+
+# Execute filters
 prev_bam="$input_bam"
 for entry in "${filters[@]}"; do
     IFS='|' read -r fname fflags fdesc <<< "$entry"
@@ -192,13 +281,11 @@ for entry in "${filters[@]}"; do
         run_filter "$fname" "$fflags" "$fdesc" "$prev_bam" "$out_bam"
         prev_bam="$out_bam"
     else
-        # independent: always start from original input
         run_filter "$fname" "$fflags" "$fdesc" "$input_bam" "$out_bam"
     fi
 done
 
-# in the end we produce QC reports
-echo "[INFO] All filters applied. Generating QC reports..."
+# QC for input + outputs
 echo "[INFO] Generating QC reports (flagstat, idxstats, stats)..."
 
 samtools flagstat "$input_bam" > "$qc_dir/input_flagstat.txt"
@@ -212,47 +299,49 @@ for bam in "$outdir"/filtered_*.bam; do
     samtools stats "$bam" > "$qc_dir/${base}_stats.txt"
 done
 
-# plotting script, with ggplot2, to visualize filter counts, for future implementation, 
-# we could switch to a more advanced plotting library if needed
-cat > "$outdir/visualize_filters.R" <<'RSCRIPT'
+# Enhanced R plotting: stacked bars + percent removed
+cat > "$outdir/visualize_filters_enhanced.R" <<'RSCRIPT'
 library(ggplot2)
 library(scales)
 
-filter_data <- read.table("filter_counts.txt", header=FALSE, sep="\t", col.names=c("Filter","Reads"))
-# Keep order as in file
-filter_data$Filter <- factor(filter_data$Filter, levels=filter_data$Filter)
+# Read filter counts
+f <- read.table("filter_counts.txt", header=FALSE, sep="	", col.names=c("Filter","Reads"), stringsAsFactors=FALSE)
+# Keep file order
+f$Filter <- factor(f$Filter, levels=f$Filter)
+# compute removed counts relative to previous (cumulative assumed)
+f$ReadsNumeric <- as.numeric(gsub(",", "", f$Reads))
+removed <- c(0, head(f$ReadsNumeric, -1) - tail(f$ReadsNumeric, -0))
+# Sometimes independent mode will give negative removed; coerce to 0
+removed[removed < 0] <- 0
+plot_df <- data.frame(Filter=f$Filter, Kept=f$ReadsNumeric, Removed=removed)
+plot_df_melt <- reshape2::melt(plot_df, id.vars="Filter")
 
-p <- ggplot(filter_data, aes(x=Filter, y=Reads)) +
-  geom_col() +
-  geom_text(aes(label=scales::comma(Reads)), vjust=-0.5, size=3) +
+p1 <- ggplot(plot_df_melt, aes(x=Filter, y=value, fill=variable)) +
+  geom_bar(stat="identity") +
+  geom_text(data=plot_df, aes(x=Filter, y=Kept + pmax(Removed,1), label=scales::comma(Kept)), vjust=-0.5, size=3) +
   scale_y_continuous(labels = scales::comma) +
-  labs(title="Reads Remaining After Filters",
-       x="Filter Applied",
+  labs(title="Reads Kept and Removed per Filter",
+       x="Filter",
        y="Number of Reads",
-       caption="alimap_enhanced.sh output") +
-  theme_minimal()
+       fill="Category",
+       caption="alimap.sh output (Kept and Removed)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
 
-pdf("alimap_filters_plot.pdf", width=8, height=5)
-print(p)
+pdf("alimap_filters_plot_enhanced.pdf", width=10, height=6)
+print(p1)
 dev.off()
 RSCRIPT
 
-# (if available and ggplot2 installed)
-if command -v Rscript >/dev/null 2>&1; then
-    echo "[INFO] Running Rscript to generate barplot (alimap_filters_plot.pdf)"
-    (cd "$outdir" && Rscript visualize_filters.R) || echo "[WARN] Rscript failed to create plot. Ensure ggplot2 is installed."
-fi
+# Run R script in outdir
+(cd "$outdir" && Rscript visualize_filters_enhanced.R) || echo "[WARN] Enhanced plotting failed (check R + reshape2 + ggplot2 installed)."
 
-# cleanup temporary files if not keeping them
-if [ $keep_temp -eq 0 ]; then
-    echo "[INFO] Cleaning up temporary files..."
-    rm -rf "$tmpdir"
-else
-    echo "[INFO] Temporary files kept in $tmpdir for debugging."
-fi
-echo "[DONE] Pipeline finished. Summary written to $filter_counts_file"
-echo "QC files in: $qc_dir"
+# Final summary
+echo "[DONE] Pipeline finished. Outputs in: $outdir"
+echo "- filter counts: $filter_counts"
+echo "- QC directory: $qc_dir"
 
-cat "$filter_counts_file"
+echo "Filter counts:";
+cat "$filter_counts"
 
 exit 0
