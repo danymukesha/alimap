@@ -342,9 +342,7 @@ plot_df$PercentRemoved <- ifelse(plot_df$Total>0, round(100 * plot_df$Removed / 
 p <- ggplot(plot_df_melt, aes(x = Filter, y = value, fill = variable)) +
     geom_bar(stat = 'identity') +
     geom_text(data = plot_df, inherit.aes = FALSE, 
-        aes(x = Filter, y = Kept + Removed + 1, 
-            label = paste0(PercentRemoved, "% removed")), 
-        size = 3, angle = 45, hjust = 0) +
+        aes(x=Filter, y=Kept + pmax(Removed,1), label=scales::comma(Kept)), vjust=-0.5, size=3) +
     labs(title='Reads Kept and Removed per Filter', 
         x = 'Filter', y = 'Reads', fill = 'Category') +
     theme_minimal() +
