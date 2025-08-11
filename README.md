@@ -189,7 +189,7 @@ Total               4.10        110
 
 If you use **Alimap** in your research, please cite:
 
-> Mukesha D. *Alimap: Integrated read filtering, QC, and benchmarking for BAM alignment files.* 2025. Available at: [https://github.com/danymukesha/alimap](https://github.com/yourusername/alimap-enhanced){.uri}
+> Mukesha D. *Alimap: Integrated read filtering, QC, and benchmarking for BAM alignment files.* 2025. Available at: [https://github.com/danymukesha/alimap](https://github.com/yourusername/alimap){.uri}
 
 ------------------------------------------------------------------------
 
